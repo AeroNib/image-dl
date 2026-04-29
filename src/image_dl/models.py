@@ -1,25 +1,25 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
 @dataclass
-class ImageTarget:
-    """Represents a single image to download."""
+class CapturedImage:
+    """An image captured via network interception or DOM extraction."""
 
     url: str | None
-    source_tag: str
-    original_ref: str
-    inline_content: bytes | None = None
+    data: bytes
+    content_type: str | None
+    source: str  # "network" or "inline-svg"
 
 
 @dataclass
-class DownloadResult:
-    """Result of a single download attempt."""
+class SaveResult:
+    """Result of saving a single image to disk."""
 
-    target: ImageTarget
+    image: CapturedImage
     filepath: Path | None = None
-    status: str = "ok"  # "ok", "skipped", "error"
+    status: str = "ok"  # "ok", "error"
     error: str | None = None
     size_bytes: int = 0

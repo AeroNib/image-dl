@@ -1,155 +1,68 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Callable
 from pathlib import Path
 
-import httpx
-
-from image_dl.models import DownloadResult, ImageTarget
+from image_dl.models import CapturedImage, SaveResult
 from image_dl.naming import resolve_filename
-from image_dl.scraper import IMAGE_CONTENT_TYPES
 from image_dl.svg import generate_svg_filename
 
-DEFAULT_CONCURRENCY = 5
-_DEFAULT_USER_AGENT = "image-dl/0.1 (https://github.com/image-dl)"
-_CHUNK_SIZE = 8192
 
-
-async def download_all(
-    targets: list[ImageTarget],
+def save_all(
+    images: list[CapturedImage],
     output_dir: Path,
-    concurrency: int = DEFAULT_CONCURRENCY,
-    timeout: int = 30,
-    user_agent: str | None = None,
-    progress_callback: Callable[[DownloadResult], None] | None = None,
-) -> list[DownloadResult]:
-    """Download all image targets concurrently.
+    progress_callback: Callable[[SaveResult], None] | None = None,
+) -> list[SaveResult]:
+    """Save all captured images to disk.
 
-    Returns a list of DownloadResult in the same order as targets.
-    Calls progress_callback after each download completes.
+    Images already have their data in memory (from network interception or
+    inline SVG extraction), so this is purely a disk-write operation.
     """
-    semaphore = asyncio.Semaphore(concurrency)
     used_names: set[str] = set()
-    results: list[DownloadResult] = []
-    lock = asyncio.Lock()
+    results: list[SaveResult] = []
+    svg_index = 0
 
-    headers = {"User-Agent": user_agent or _DEFAULT_USER_AGENT}
-
-    async with httpx.AsyncClient(
-        follow_redirects=True,
-        timeout=timeout,
-        headers=headers,
-    ) as client:
-        tasks: list[asyncio.Task[DownloadResult]] = []
-        for i, target in enumerate(targets):
-            if target.inline_content is not None:
-                task = asyncio.create_task(
-                    _save_inline_svg(target, output_dir, used_names, i, lock)
-                )
-            else:
-                task = asyncio.create_task(
-                    _download_one(client, target, output_dir, semaphore, used_names, lock)
-                )
-            tasks.append(task)
-
-        for task in asyncio.as_completed(tasks):
-            result = await task
-            results.append(result)
-            if progress_callback:
-                progress_callback(result)
+    for image in images:
+        result = _save_one(image, output_dir, used_names, svg_index)
+        if image.source == "inline-svg":
+            svg_index += 1
+        results.append(result)
+        if progress_callback:
+            progress_callback(result)
 
     return results
 
 
-async def _download_one(
-    client: httpx.AsyncClient,
-    target: ImageTarget,
-    output_dir: Path,
-    semaphore: asyncio.Semaphore,
-    used_names: set[str],
-    lock: asyncio.Lock,
-) -> DownloadResult:
-    """Download a single image URL to disk."""
-    assert target.url is not None
-    try:
-        async with semaphore:
-            response = await client.get(target.url)
-            response.raise_for_status()
-
-            content_type = response.headers.get("content-type", "")
-            mime = content_type.split(";", 1)[0].strip().lower()
-
-            # Validate it's actually an image
-            if mime and mime not in IMAGE_CONTENT_TYPES and not mime.startswith("image/"):
-                return DownloadResult(
-                    target=target,
-                    status="skipped",
-                    error=f"Not an image (content-type: {mime})",
-                )
-
-            async with lock:
-                filename = resolve_filename(
-                    target.url, content_type, None, used_names,
-                )
-
-            filepath = output_dir / filename
-            data = response.content
-            filepath.write_bytes(data)
-
-            return DownloadResult(
-                target=target,
-                filepath=filepath,
-                status="ok",
-                size_bytes=len(data),
-            )
-    except httpx.TimeoutException:
-        return DownloadResult(
-            target=target, status="error", error="Timeout",
-        )
-    except httpx.HTTPStatusError as exc:
-        return DownloadResult(
-            target=target, status="error",
-            error=f"HTTP {exc.response.status_code}",
-        )
-    except httpx.HTTPError as exc:
-        return DownloadResult(
-            target=target, status="error", error=str(exc),
-        )
-    except OSError as exc:
-        return DownloadResult(
-            target=target, status="error", error=f"Write error: {exc}",
-        )
-
-
-async def _save_inline_svg(
-    target: ImageTarget,
+def _save_one(
+    image: CapturedImage,
     output_dir: Path,
     used_names: set[str],
-    index: int,
-    lock: asyncio.Lock,
-) -> DownloadResult:
-    """Write an inline SVG's content directly to disk."""
-    assert target.inline_content is not None
+    svg_index: int,
+) -> SaveResult:
+    """Save a single image to disk."""
     try:
-        svg_name = generate_svg_filename(target.inline_content, index)
-
-        async with lock:
-            # Deduplicate against other filenames
+        if image.source == "inline-svg":
+            filename = generate_svg_filename(image.data, svg_index)
             from image_dl.naming import deduplicate_filename
-            final_name = deduplicate_filename(svg_name, used_names)
-            used_names.add(final_name)
+            filename = deduplicate_filename(filename, used_names)
+            used_names.add(filename)
+        else:
+            filename = resolve_filename(
+                image.url, image.content_type, None, used_names,
+            )
 
-        filepath = output_dir / final_name
-        filepath.write_bytes(target.inline_content)
+        filepath = output_dir / filename
+        filepath.write_bytes(image.data)
 
-        return DownloadResult(
-            target=target,
+        return SaveResult(
+            image=image,
             filepath=filepath,
             status="ok",
-            size_bytes=len(target.inline_content),
+            size_bytes=len(image.data),
         )
     except OSError as exc:
-        return DownloadResult(
-            target=target, status="error", error=f"Write error: {exc}",
+        return SaveResult(
+            image=image,
+            status="error",
+            error=f"Write error: {exc}",
         )

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
 from image_dl import __version__
-from image_dl.downloader import download_all
-from image_dl.scraper import ScraperError, extract_images, fetch_page
+from image_dl.browser import BrowserError, capture_images
+from image_dl.downloader import save_all
 from image_dl.tui import DownloadTUI
 
 
@@ -24,24 +23,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Directory to save images to (default: current directory)",
     )
     parser.add_argument(
-        "-c", "--concurrency",
-        type=int, default=5,
-        help="Max concurrent downloads (default: 5)",
-    )
-    parser.add_argument(
         "--timeout",
         type=int, default=30,
-        help="Per-request timeout in seconds (default: 30)",
+        help="Page load timeout in seconds (default: 30)",
     )
     parser.add_argument(
         "--no-inline-svg",
         action="store_true",
         help="Skip extraction of inline SVG elements",
-    )
-    parser.add_argument(
-        "--user-agent",
-        default=None,
-        help="Custom User-Agent header",
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -84,38 +73,35 @@ def main(argv: list[str] | None = None) -> int:
 
     tui.start()
 
-    # Fetch the page
-    tui.update_phase("Fetching page...")
+    # Capture images using headless browser
     try:
-        html, final_url = fetch_page(
-            url, timeout=args.timeout, user_agent=args.user_agent,
-        )
-    except ScraperError as exc:
+        images = asyncio.run(capture_images(
+            url,
+            timeout=args.timeout,
+            on_status=tui.update_phase,
+        ))
+    except BrowserError as exc:
         tui.show_error(str(exc))
         return 2
 
-    # Extract image targets
-    tui.update_phase("Extracting images...")
-    include_inline_svg = not args.no_inline_svg
-    targets = extract_images(html, final_url, include_inline_svg=include_inline_svg)
+    # Filter out inline SVGs if requested
+    if args.no_inline_svg:
+        images = [img for img in images if img.source != "inline-svg"]
 
-    if not targets:
+    if not images:
         tui.stop()
         tui.console.print("[yellow]No images found on this page.[/]")
         return 0
 
-    # Download
-    tui.update_phase(f"Downloading {len(targets)} images...")
-    tui.begin_downloads(total=len(targets))
+    # Save to disk
+    tui.update_phase(f"Saving {len(images)} images...")
+    tui.begin_downloads(total=len(images))
 
-    results = asyncio.run(download_all(
-        targets=targets,
+    results = save_all(
+        images=images,
         output_dir=output_dir,
-        concurrency=args.concurrency,
-        timeout=args.timeout,
-        user_agent=args.user_agent,
         progress_callback=tui.on_download_complete,
-    ))
+    )
 
     # Summary
     tui.show_summary(results)
@@ -123,7 +109,7 @@ def main(argv: list[str] | None = None) -> int:
     # Exit code
     errors = [r for r in results if r.status == "error"]
     if len(errors) == len(results):
-        return 2  # all failed
+        return 2
     elif errors:
-        return 1  # partial failure
+        return 1
     return 0

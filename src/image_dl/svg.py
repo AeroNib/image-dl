@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import re
 
-from bs4 import Tag
 
-
-def serialize_svg_element(svg_tag: Tag) -> bytes:
-    """Serialize a BeautifulSoup <svg> Tag into a standalone SVG file.
+def serialize_svg_html(outer_html: str) -> bytes:
+    """Convert an SVG element's outer HTML into a standalone SVG file.
 
     Adds the xmlns attribute if missing so the output is a valid standalone SVG.
+    The outer_html comes from Playwright's element.evaluate("el => el.outerHTML").
     """
-    if not svg_tag.get("xmlns"):
-        svg_tag["xmlns"] = "http://www.w3.org/2000/svg"
-    svg_str = str(svg_tag)
+    if 'xmlns="' not in outer_html and "xmlns='" not in outer_html:
+        outer_html = outer_html.replace("<svg", '<svg xmlns="http://www.w3.org/2000/svg"', 1)
     declaration = '<?xml version="1.0" encoding="UTF-8"?>\n'
-    return (declaration + svg_str).encode("utf-8")
+    return (declaration + outer_html).encode("utf-8")
 
 
 def generate_svg_filename(svg_bytes: bytes, index: int) -> str:
@@ -23,18 +22,15 @@ def generate_svg_filename(svg_bytes: bytes, index: int) -> str:
     Uses the <title> element text if present, otherwise falls back to
     ``inline-svg-{index}``.
     """
-    from bs4 import BeautifulSoup
-
-    soup = BeautifulSoup(svg_bytes, "lxml-xml")
-    title_tag = soup.find("title")
-    if title_tag and title_tag.string:
-        # Sanitize title for use as filename
-        name = title_tag.string.strip()[:80]
-        name = "".join(c if c.isalnum() or c in "-_ " else "" for c in name)
-        name = name.strip().replace(" ", "-") or f"inline-svg-{index}"
-    else:
-        name = f"inline-svg-{index}"
-    return f"{name}.svg"
+    text = svg_bytes.decode("utf-8", errors="replace")
+    match = re.search(r"<title[^>]*>(.*?)</title>", text, re.IGNORECASE | re.DOTALL)
+    if match:
+        title = match.group(1).strip()[:80]
+        name = "".join(c if c.isalnum() or c in "-_ " else "" for c in title)
+        name = name.strip().replace(" ", "-")
+        if name:
+            return f"{name}.svg"
+    return f"inline-svg-{index}.svg"
 
 
 def svg_content_hash(svg_bytes: bytes) -> str:

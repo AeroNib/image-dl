@@ -18,7 +18,7 @@ from rich.progress import (
 from rich.table import Table
 from rich.text import Text
 
-from image_dl.models import DownloadResult
+from image_dl.models import SaveResult
 
 
 def _format_bytes(n: int) -> str:
@@ -39,7 +39,6 @@ class DownloadTUI:
         self._total = 0
         self._completed = 0
         self._failed = 0
-        self._skipped = 0
         self._bytes_downloaded = 0
         self._log: deque[str] = deque(maxlen=10)
         self._progress = Progress(
@@ -79,24 +78,19 @@ class DownloadTUI:
 
     def begin_downloads(self, total: int) -> None:
         self._total = total
-        self._task_id = self._progress.add_task("Downloading", total=total)
+        self._task_id = self._progress.add_task("Saving", total=total)
         self._refresh()
 
-    def on_download_complete(self, result: DownloadResult) -> None:
+    def on_download_complete(self, result: SaveResult) -> None:
         if result.status == "ok":
             self._completed += 1
             self._bytes_downloaded += result.size_bytes
             name = result.filepath.name if result.filepath else "?"
             size = _format_bytes(result.size_bytes)
             self._log.append(f"[green]  {name}[/]  ({size})")
-        elif result.status == "skipped":
-            self._skipped += 1
-            ref = result.target.original_ref[:60]
-            reason = result.error or "skipped"
-            self._log.append(f"[yellow]  {ref}[/]  ({reason})")
         else:
             self._failed += 1
-            ref = result.target.original_ref[:60]
+            ref = (result.image.url or "<inline-svg>")[:60]
             reason = result.error or "error"
             self._log.append(f"[red]  {ref}[/]  ({reason})")
 
@@ -105,15 +99,14 @@ class DownloadTUI:
 
         self._refresh()
 
-    def show_summary(self, results: list[DownloadResult]) -> None:
+    def show_summary(self, results: list[SaveResult]) -> None:
         self.stop()
 
         table = Table(title="Download Summary", show_lines=False)
         table.add_column("Metric", style="bold")
         table.add_column("Value", justify="right")
         table.add_row("Total images found", str(self._total))
-        table.add_row("Downloaded", f"[green]{self._completed}[/]")
-        table.add_row("Skipped", f"[yellow]{self._skipped}[/]")
+        table.add_row("Saved", f"[green]{self._completed}[/]")
         table.add_row("Failed", f"[red]{self._failed}[/]")
         table.add_row("Total size", _format_bytes(self._bytes_downloaded))
         self.console.print()
@@ -124,7 +117,7 @@ class DownloadTUI:
             self.console.print()
             self.console.print("[bold red]Errors:[/]")
             for r in errors:
-                ref = r.target.original_ref[:80]
+                ref = (r.image.url or "<inline-svg>")[:80]
                 self.console.print(f"  {ref} - {r.error}")
 
     def show_error(self, message: str) -> None:
@@ -151,8 +144,6 @@ class DownloadTUI:
             stats.append(f"  {_format_bytes(self._bytes_downloaded)}", style="bold")
             stats.append(f"   {self._completed}", style="green")
             stats.append(f"   {self._failed}", style="red")
-            if self._skipped:
-                stats.append(f"   {self._skipped}", style="yellow")
             grid.add_row(stats)
 
         if self._log:
